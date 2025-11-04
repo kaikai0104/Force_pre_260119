@@ -1,0 +1,38 @@
+# Python 缓存文件
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# 数据文件夹 - 不推送
+python_workspace/data/
+python_workspace/data_csv/
+python_workspace/results/
+python_workspace/artifacts/
+# 但允许跟踪模型参数JSON文件
+!python_workspace/artifacts/model_params.json
+
+# C工作区 - 只忽略生成的头文件和可执行文件
+c_workspace/model_params.h
+
+
+# C编译输出
+c_workspace/*.exe
+c_workspace/*.o
+
+# IDE 配置
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
