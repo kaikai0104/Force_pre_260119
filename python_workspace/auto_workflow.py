@@ -4,9 +4,9 @@
 1. 训练Python神经网络模型
 2. 导出模型参数到C语言头文件
 3. 转换Excel数据为CSV
-4. 编译C程序
-5. 运行C程序进行验证
-6. 绘制C程序预测结果与真实值的对比图表
+4. 编译C语言验证程序
+5. 批量验证所有数据集（自动创建时间戳文件夹）
+6. 绘制所有验证结果的对比图表
 
 使用方法：
     python auto_workflow.py
@@ -14,9 +14,12 @@
 可选参数：
     --epochs N          训练轮数 (默认: 20)
     --hidden N          GRU隐藏层大小 (默认: 16)
-    --test-data FILE    测试数据文件 (默认: data/1.xlsx)
     --skip-train        跳过训练步骤（使用已有模型）
     --skip-compile      跳过编译步骤（使用已有可执行文件）
+
+注意：
+    - C程序会自动验证data_csv文件夹中的所有CSV文件
+    - 结果保存在results/时间戳/文件夹中
 """
 
 import os
@@ -225,18 +228,22 @@ def plot_comparison(csv_file, output_dir):
         # 调整布局
         plt.tight_layout()
         
-        # 保存图表
+        # 保存图表 - 根据输入文件名生成输出文件名
         os.makedirs(output_dir, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        plot_file = os.path.join(output_dir, f'c_validation_result_{timestamp}.png')
+        
+        # 从输入文件名提取基础名称
+        base_name = os.path.splitext(os.path.basename(csv_file))[0]
+        plot_file = os.path.join(output_dir, f'{base_name}.png')
+        
         plt.savefig(plot_file, dpi=150, bbox_inches='tight')
         plt.close()
         
         print(f"\n[OK] 图表已保存: {plot_file}")
         
         # 同时保存一个汇总JSON文件
+        json_file = os.path.join(output_dir, f'{base_name}_metrics.json')
         summary = {
-            "timestamp": timestamp,
+            "file": os.path.basename(csv_file),
             "data_points": len(df),
             "metrics": {
                 "MAE": float(mae),
@@ -252,11 +259,10 @@ def plot_comparison(csv_file, output_dir):
             }
         }
         
-        summary_file = os.path.join(output_dir, f'c_validation_summary_{timestamp}.json')
-        with open(summary_file, 'w', encoding='utf-8') as f:
+        with open(json_file, 'w', encoding='utf-8') as f:
             json.dump(summary, f, indent=2, ensure_ascii=False)
         
-        print(f"[OK] 汇总数据已保存: {summary_file}")
+        print(f"[OK] 指标数据已保存: {json_file}")
         
         return True
     
@@ -270,14 +276,13 @@ def main():
     parser = argparse.ArgumentParser(description='自动化神经网络模型工作流')
     parser.add_argument('--epochs', type=int, default=0, help='训练轮数 (0=交互式输入)')
     parser.add_argument('--hidden', type=int, default=16, help='GRU隐藏层大小')
-    parser.add_argument('--test-data', type=str, default='data/1.xlsx', help='测试数据文件')
     parser.add_argument('--skip-train', action='store_true', help='跳过训练步骤')
     parser.add_argument('--skip-compile', action='store_true', help='跳过编译步骤')
     args = parser.parse_args()
     
     print("\n" + "="*70)
     print("  神经网络模型自动化工作流")
-    print("  Python训练 -> C语言实现 -> 验证 -> 可视化")
+    print("  Python训练 -> C语言实现 -> 批量验证 -> 可视化")
     print("="*70)
     
     # 设置路径
@@ -425,7 +430,7 @@ def main():
     
     # ==================== 步骤4: 编译C程序 ====================
     if not args.skip_compile:
-        print_step(4, "编译C语言程序")
+        print_step(4, "编译C语言验证程序")
         
         # 检查是否有GCC
         try:
@@ -439,91 +444,110 @@ def main():
             print("请安装MinGW-w64或其他C编译器")
             return 1
         
-        compile_cmd = (
+        # 编译验证程序 (validate.c)
+        print("\n> 编译验证程序...")
+        compile_validate_cmd = (
             'gcc -std=c99 -O2 -Wall -Wextra '
-            '-o force_predictor.exe main.c neural_network.c -lm'
+            '-o validate.exe validate.c neural_network.c -lm'
         )
         
-        if not run_command(compile_cmd, "编译C程序", cwd=c_workspace):
+        if not run_command(compile_validate_cmd, "编译验证程序", cwd=c_workspace):
             print("\n[错误] 编译失败！")
             return 1
         
-        exe_file = os.path.join(c_workspace, "force_predictor.exe")
-        if not os.path.exists(exe_file):
-            print(f"\n[错误] 可执行文件生成失败: {exe_file}")
+        validate_exe = os.path.join(c_workspace, "validate.exe")
+        if not os.path.exists(validate_exe):
+            print(f"\n[错误] 可执行文件生成失败: {validate_exe}")
             return 1
+        
     else:
         print_step(4, "跳过编译步骤（使用已有可执行文件）")
     
     # ==================== 步骤5: 运行C程序验证 ====================
-    print_step(5, "运行C程序进行验证")
+    print_step(5, "运行C程序批量验证所有数据集")
     
-    # 列出所有可用的CSV文件
-    print(f"\n可用的验证数据集（位于 data_csv/ 文件夹）:")
+    # C程序现在自动批量验证所有CSV文件
+    # 不需要用户选择，直接运行即可
+    
+    print(f"\n找到 {len(csv_files)} 个数据集，将全部验证:")
     for i, csv_file in enumerate(csv_files, 1):
         csv_path = os.path.join(data_csv_folder, csv_file)
         if os.path.exists(csv_path):
-            # 获取文件大小
             file_size = os.path.getsize(csv_path)
             size_kb = file_size / 1024
             print(f"  [{i}] {csv_file:<20} ({size_kb:.1f} KB)")
     
-    # 请求用户选择
-    selected_csv = None
-    while True:
-        try:
-            user_choice = input(f"\n请选择验证数据集 [1-{len(csv_files)}，默认: 1]: ").strip()
-            if user_choice == '':
-                selected_index = 0
-                break
-            choice_num = int(user_choice)
-            if 1 <= choice_num <= len(csv_files):
-                selected_index = choice_num - 1
-                break
-            else:
-                print(f"[错误] 请输入 1 到 {len(csv_files)} 之间的数字")
-        except ValueError:
-            print("[错误] 请输入有效的数字")
+    print("\n开始批量验证...")
     
-    selected_csv = csv_files[selected_index]
-    selected_csv_path = os.path.join(data_csv_folder, selected_csv)
-    
-    print(f"\n已选择数据集: {selected_csv}")
-    
-    # 准备输出文件名
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    csv_basename = os.path.splitext(selected_csv)[0]
-    c_results_csv = os.path.join(results_dir, f"c_validation_{csv_basename}_{timestamp}.csv")
-    
-    run_cmd = f'force_predictor.exe "{selected_csv_path}" "{c_results_csv}"'
+    # C程序会自动创建时间戳文件夹并验证所有数据
+    # 只需要运行 validate.exe，不需要传参数
+    run_cmd = 'validate.exe'
     
     # 使用实时输出，可以看到验证进度
-    if not run_command(run_cmd, "C程序验证", cwd=c_workspace, realtime=True):
+    if not run_command(run_cmd, "C程序批量验证", cwd=c_workspace, realtime=True):
         print("\n[错误] 验证失败！")
         return 1
     
-    if not os.path.exists(c_results_csv):
-        print(f"\n[错误] 结果文件生成失败: {c_results_csv}")
+    # 查找最新生成的结果文件夹
+    results_folders = []
+    if os.path.exists(results_dir):
+        for item in os.listdir(results_dir):
+            item_path = os.path.join(results_dir, item)
+            if os.path.isdir(item_path) and item.replace('_', '').isdigit():
+                results_folders.append(item)
+    
+    if not results_folders:
+        print(f"\n[错误] 未找到验证结果文件夹")
         return 1
     
+    # 使用最新的文件夹
+    latest_folder = sorted(results_folders)[-1]
+    validation_results_dir = os.path.join(results_dir, latest_folder)
+    
+    print(f"\n验证结果保存在: {validation_results_dir}")
+    
+    # 列出生成的文件
+    result_files = []
+    if os.path.exists(validation_results_dir):
+        result_files = [f for f in os.listdir(validation_results_dir) if f.endswith('.csv')]
+        print(f"\n生成的验证结果文件:")
+        for f in result_files:
+            print(f"  - {f}")
+    
     # ==================== 步骤6: 绘制对比图表 ====================
-    if not plot_comparison(c_results_csv, results_dir):
-        print("\n[错误] 绘图失败！")
-        return 1
+    print_step(6, "绘制验证结果对比图表")
+    
+    # 为每个验证结果绘制图表
+    plot_count = 0
+    for result_file in result_files:
+        if result_file.startswith('validation_') and result_file.endswith('.csv'):
+            result_path = os.path.join(validation_results_dir, result_file)
+            print(f"\n绘制图表: {result_file}")
+            if plot_comparison(result_path, validation_results_dir):
+                plot_count += 1
+    
+    print(f"\n[OK] 成功绘制 {plot_count} 个对比图表")
     
     # ==================== 完成 ====================
     print("\n" + "="*70)
     print("  [OK] 所有步骤完成！")
     print("="*70)
     print(f"\n生成的文件:")
-    print(f"  1. 模型参数:   {os.path.join(c_workspace, 'model_params.h')}")
-    print(f"  2. JSON参数:   {os.path.join(c_workspace, 'model_params.json')}")
+    print(f"  1. 模型参数:   {os.path.join(artifacts_dir, 'model_params.json')}")
+    print(f"  2. C语言头文件: {os.path.join(c_workspace, 'model_params.h')}")
     print(f"  3. CSV数据集:  {data_csv_folder}/ ({len(csv_files)} 个文件)")
-    print(f"  4. 验证数据:   {selected_csv}")
-    print(f"  5. 验证结果:   {c_results_csv}")
-    print(f"  6. 对比图表:   {results_dir}/*.png")
-    print(f"  7. 汇总数据:   {results_dir}/*.json")
+    print(f"  4. 验证结果:   {validation_results_dir}/")
+    print(f"  5. 验证报告:   {len(result_files)} 个CSV文件")
+    print(f"  6. 对比图表:   {plot_count} 个PNG文件")
     
+    # 打印汇总文件
+    summary_file = os.path.join(validation_results_dir, "summary.txt")
+    if os.path.exists(summary_file):
+        print(f"  7. 验证汇总:   summary.txt")
+        print(f"\n查看详细汇总:")
+        print(f"  type \"{summary_file}\"")
+    
+
     print(f"\n查看结果:")
     print(f"  - 图表保存在: {results_dir}")
     print(f"  - 可以打开PNG文件查看可视化结果")
