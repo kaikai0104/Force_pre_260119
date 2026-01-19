@@ -1,7 +1,3 @@
-"""
-导出训练好的模型参数到C头文件和JSON文件
-用于在C语言中重新实现相同的神经网络模型
-"""
 import os
 import json
 import numpy as np
@@ -20,6 +16,9 @@ def export_model_parameters(artifacts_dir="./artifacts", output_dir="../c_worksp
     # 2. 加载特征归一化参数
     with open(os.path.join(artifacts_dir, "feature_norm.json"), "r", encoding="utf-8") as f:
         norm_params = json.load(f)
+    
+    # 注意: 间隙补偿参数已移除，相关功能在gap_detection模块中
+    # 如需使用间隙补偿，请单独导入gap_detection.c模块
     
     # 3. 加载PyTorch模型权重
     model_path = os.path.join(artifacts_dir, "model_residual.pth")
@@ -118,12 +117,6 @@ def generate_c_header(params, output_dir):
         f.write(f"#define PI_BIAS {pi['bias']}\n")
         f.write(f"#define USE_DIQ {1 if pi['use_diq'] else 0}\n")
         f.write(f"#define IQ_SCALE {pi['iq_scale']}\n\n")
-        
-        # 物理约束参数
-        f.write("/* 物理约束参数 */\n")
-        f.write(f"#define APPLY_PHYSICAL_CONSTRAINT {1 if pi.get('apply_physical_constraint', False) else 0}\n")
-        f.write(f"#define FORCE_MAX_RATE {pi.get('force_max_rate', 5000.0)}\n")
-        f.write(f"#define FORCE_MIN {pi.get('force_min', 0.0)}\n\n")
         
         # 残差归一化参数
         f.write("/* 残差归一化参数 */\n")

@@ -1,27 +1,3 @@
-"""
-完整自动化工作流脚本
-功能：
-1. 训练Python神经网络模型
-2. 导出模型参数到C语言头文件
-3. 转换Excel数据为CSV
-4. 编译C语言验证程序
-5. 批量验证所有数据集（自动创建时间戳文件夹）
-6. 绘制所有验证结果的对比图表
-
-使用方法：
-    python auto_workflow.py
-
-可选参数：
-    --epochs N          训练轮数 (默认: 20)
-    --hidden N          GRU隐藏层大小 (默认: 16)
-    --skip-train        跳过训练步骤（使用已有模型）
-    --skip-compile      跳过编译步骤（使用已有可执行文件）
-
-注意：
-    - C程序会自动验证data_csv文件夹中的所有CSV文件
-    - 结果保存在results/时间戳/文件夹中
-"""
-
 import os
 import sys
 import subprocess
@@ -105,10 +81,11 @@ def run_command(cmd, description, cwd=None, shell=True, realtime=False):
             if result.stdout:
                 print(result.stdout)
             
+            if result.stderr:
+                print(result.stderr)
+            
             if result.returncode != 0:
                 print(f"\n[错误] 命令执行失败 (返回码: {result.returncode})")
-                if result.stderr:
-                    print(f"错误信息:\n{result.stderr}")
                 return False
         
         print(f"[OK] {description} - 完成")
@@ -117,6 +94,20 @@ def run_command(cmd, description, cwd=None, shell=True, realtime=False):
     except Exception as e:
         print(f"\n[错误] 异常: {str(e)}")
         return False
+
+def get_gcc_version(gcc_cmd):
+    """获取GCC版本信息"""
+    try:
+        result = subprocess.run(
+            [gcc_cmd, '--version'],
+            capture_output=True,
+            text=True,
+            encoding='gbk',
+            errors='replace'
+        )
+        return (result.stdout or result.stderr or "").strip()
+    except Exception:
+        return ""
 
 def check_files_exist(files, description):
     """检查文件是否存在"""
@@ -278,6 +269,7 @@ def main():
     parser.add_argument('--hidden', type=int, default=16, help='GRU隐藏层大小')
     parser.add_argument('--skip-train', action='store_true', help='跳过训练步骤')
     parser.add_argument('--skip-compile', action='store_true', help='跳过编译步骤')
+    parser.add_argument('--enable-gap', action='store_true', help='启用制动间隙检测')
     args = parser.parse_args()
     
     print("\n" + "="*70)
@@ -294,6 +286,28 @@ def main():
     
     os.makedirs(artifacts_dir, exist_ok=True)
     os.makedirs(results_dir, exist_ok=True)
+    
+    # ==================== 询问是否启用间隙检测 ====================
+    enable_gap_detection = args.enable_gap
+    if not enable_gap_detection:
+        print("\n" + "-"*70)
+        print("  制动间隙检测功能")
+        print("-"*70)
+        print("\n制动间隙检测用于识别电机电流突变点，并以此作为位移零点。")
+        print("这对于消除机械间隙影响可能有帮助，但会增加处理复杂度。")
+        print("\n是否启用制动间隙检测？")
+        while True:
+            user_input = input("请输入 (y/n) [默认: n]: ").strip().lower()
+            if user_input in ['y', 'yes']:
+                enable_gap_detection = True
+                print("✓ 已启用制动间隙检测")
+                break
+            elif user_input in ['n', 'no', '']:
+                enable_gap_detection = False
+                print("✓ 未启用制动间隙检测")
+                break
+            else:
+                print("[错误] 请输入 y 或 n")
     
     # ==================== 步骤1: 训练模型 ====================
     if not args.skip_train:
@@ -322,13 +336,18 @@ def main():
             
             print(f"\n已设置训练轮数: {epochs}")
         
+        # 使用当前Python解释器路径，确保使用正确的环境
+        python_exe = sys.executable
         train_cmd = (
-            f'python train_schemeC.py '
+            f'"{python_exe}" train_schemeC.py '
             f'--inputs "data/*.xlsx" '
             f'--epochs {epochs} '
-            f'--hidden {args.hidden} '
-            f'--apply_physical_constraint'
+            f'--hidden {args.hidden}'
         )
+        
+        # 如果启用间隙检测，添加相应参数
+        if enable_gap_detection:
+            train_cmd += ' --enable_gap_compensation'
         
         # 使用实时输出模式，这样可以看到训练进度
         if not run_command(train_cmd, "训练神经网络模型", cwd=python_workspace, realtime=True):
@@ -351,8 +370,9 @@ def main():
     # ==================== 步骤2: 导出模型参数 ====================
     print_step(2, "导出模型参数到C语言")
     
+    python_exe = sys.executable
     export_cmd = (
-        f'python export_model_to_c.py '
+        f'"{python_exe}" export_model_to_c.py '
         f'--artifacts "{artifacts_dir}" '
         f'--output "{c_workspace}"'
     )
@@ -432,33 +452,37 @@ def main():
     if not args.skip_compile:
         print_step(4, "编译C语言验证程序")
         
-        # 检查是否有GCC
-        try:
-            subprocess.run(['gcc', '--version'], capture_output=True, check=True)
-            has_gcc = True
-        except:
-            has_gcc = False
+        # 使用TDM-GCC 10.3.0编译器
+        gcc_cmd = r'C:\TDM-GCC-64\bin\gcc.exe'
         
-        if not has_gcc:
-            print("\n[错误] 未找到GCC编译器")
-            print("请安装MinGW-w64或其他C编译器")
+        # 检查GCC是否存在
+        if not os.path.exists(gcc_cmd):
+            print("\n[错误] 未找到TDM-GCC编译器")
+            print(f"请确保TDM-GCC 10.3.0已安装在: {gcc_cmd}")
             return 1
+        
+        print(f"使用GCC编译器: {gcc_cmd}")
+        gcc_version_text = get_gcc_version(gcc_cmd)
+        if gcc_version_text:
+            print(f"GCC版本信息: {gcc_version_text.splitlines()[0]}")
         
         # 编译验证程序 (validate.c)
         print("\n> 编译验证程序...")
         compile_validate_cmd = (
-            'gcc -std=c99 -O2 -Wall -Wextra '
+            f'"{gcc_cmd}" -std=c99 -O2 -Wall -Wextra '
             '-o validate.exe validate.c neural_network.c -lm'
         )
         
-        if not run_command(compile_validate_cmd, "编译验证程序", cwd=c_workspace):
-            print("\n[错误] 编译失败！")
-            return 1
+        # 运行编译命令
+        run_command(compile_validate_cmd, "编译验证程序", cwd=c_workspace)
         
+        # 检查可执行文件是否生成
         validate_exe = os.path.join(c_workspace, "validate.exe")
         if not os.path.exists(validate_exe):
-            print(f"\n[错误] 可执行文件生成失败: {validate_exe}")
+            print(f"\n[错误] 编译失败！可执行文件未生成: {validate_exe}")
             return 1
+        
+        print(f"[OK] 编译成功，生成文件: validate.exe")
         
     else:
         print_step(4, "跳过编译步骤（使用已有可执行文件）")

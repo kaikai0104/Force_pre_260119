@@ -13,6 +13,14 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 
+# 导入间隙检测模块（可选功能）
+try:
+    from gap_detection import compensate_displacement_gap
+    GAP_DETECTION_AVAILABLE = True
+except ImportError:
+    GAP_DETECTION_AVAILABLE = False
+
+
 # 环境配置
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
@@ -21,20 +29,8 @@ os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
 # ==================== 数据处理工具函数 ====================
 
-def physical_force_constraint(force_series, dt=0.01, max_rate=5000.0, min_force=0.0):
-    """应用物理约束：非负性 + 变化率限制"""
-    force_constrained = force_series.copy()
-    max_change_per_step = max_rate * dt
-    
-    for i in range(1, len(force_constrained)):
-        delta = force_constrained[i] - force_constrained[i-1]
-        if delta > max_change_per_step:
-            force_constrained[i] = force_constrained[i-1] + max_change_per_step
-        elif delta < -max_change_per_step:
-            force_constrained[i] = force_constrained[i-1] - max_change_per_step
-    
-    force_constrained = np.maximum(force_constrained, min_force)
-    return force_constrained
+# 间隙检测功能已移至gap_detection.py模块
+# 如需使用间隙检测，请导入gap_detection模块并在训练时启用--enable_gap_compensation选项
 
 def moving_average(a, w):
     """移动平均滤波"""
@@ -145,9 +141,12 @@ def main():
     ap.add_argument("--downsample", type=int, default=1, help="下采样因子")
     ap.add_argument("--loss", type=str, default="smoothl1", choices=["l1","mse","smoothl1"], help="损失函数类型")
     ap.add_argument("--iq_scale", type=float, default=1.0, help="电流特征缩放系数")
-    ap.add_argument("--force_max_rate", type=float, default=5000.0, help="夹紧力最大变化率(N/s)")
-    ap.add_argument("--force_min", type=float, default=0.0, help="夹紧力最小值(N)")
-    ap.add_argument("--apply_physical_constraint", action="store_true", help="应用物理约束")
+    
+    # 间隙补偿参数
+    ap.add_argument("--enable_gap_compensation", action="store_true", help="启用制动间隙补偿")
+    ap.add_argument("--gap_threshold_factor", type=float, default=2.0, help="间隙检测阈值倍数")
+    ap.add_argument("--gap_window", type=int, default=5, help="间隙检测滑动窗口")
+    
     ap.add_argument("--artifacts", type=str, default="./artifacts", help="输出目录")
     
     args = ap.parse_args()
@@ -188,6 +187,29 @@ def main():
     mask = np.isfinite(x) & np.isfinite(iq) & np.isfinite(F)
     x, iq, F = x[mask], iq[mask], F[mask]
 
+    # 应用制动间隙补偿（如果启用）
+    gap_value = 0.0
+    gap_index = 0
+    if args.enable_gap_compensation:
+        if not GAP_DETECTION_AVAILABLE:
+            print("错误: 间隙检测模块不可用，跳过间隙补偿")
+            print("间隙补偿: 未启用\n")
+        else:
+            print("检测制动间隙...")
+            gap_params = {
+                'threshold_factor': args.gap_threshold_factor,
+                'window': args.gap_window
+            }
+            x_compensated, gap_index, gap_value = compensate_displacement_gap(x, iq, gap_params)
+            print(f"  间隙点索引: {gap_index}")
+            print(f"  间隙大小: {gap_value:.6f} m ({gap_value*1000:.3f} mm)")
+            print(f"  补偿前位移范围: [{np.min(x):.6f}, {np.max(x):.6f}] m")
+            print(f"  补偿后位移范围: [{np.min(x_compensated):.6f}, {np.max(x_compensated):.6f}] m\n")
+            x = x_compensated
+    else:
+        print("间隙补偿: 未启用\n")
+    
+    # 使用(可能补偿后的)位移进行后续处理
     x_s = moving_average(x, args.ma)
     iq_s = moving_average(iq, args.ma)
     F_s = moving_average(F, args.ma)
@@ -230,20 +252,13 @@ def main():
         bias = w[args.M+2]
     
     F0 = X @ w
-    
-    if args.apply_physical_constraint:
-        F0 = physical_force_constraint(F0, dt=dt, max_rate=args.force_max_rate, min_force=args.force_min)
-        print(f"物理约束: [{np.min(F0):.1f}, {np.max(F0):.1f}] N")
 
     pi_params = {
         "dt": dt, "lag_samples_x_to_F": int(lag), "M": int(args.M),
         "r_list": r_list.tolist(), "w_P": w_P.tolist(),
         "beta_dx": float(beta_dx), "alpha_iq": float(alpha_iq),
         "beta_diq": float(beta_diq), "bias": float(bias),
-        "use_diq": bool(args.use_diq), "iq_scale": float(args.iq_scale),
-        "apply_physical_constraint": bool(args.apply_physical_constraint),
-        "force_max_rate": float(args.force_max_rate),
-        "force_min": float(args.force_min)
+        "use_diq": bool(args.use_diq), "iq_scale": float(args.iq_scale)
     }
     with open(os.path.join(args.artifacts, "pi_params.json"), "w", encoding="utf-8") as f:
         json.dump(pi_params, f, indent=2)
@@ -303,7 +318,15 @@ def main():
     print(f"测试集: {len(Xte_w)} 窗口\n")
 
     # ========== 7. 模型初始化 ==========
-    device = torch.device("cpu")
+    # 自动检测GPU可用性
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"使用设备: {device}")
+    if torch.cuda.is_available():
+        print(f"GPU型号: {torch.cuda.get_device_name(0)}")
+        print(f"GPU内存: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB\n")
+    else:
+        print("未检测到GPU，使用CPU训练\n")
+    
     model = ResidualGRU(in_dim=feats.shape[1], hidden=args.hidden).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=args.lr)
     
@@ -384,6 +407,10 @@ def main():
     
     Xte_w_t, Yte_w_t = make_test_windows(Xte_n, Yte, test_starts, L)
     
+    # 将测试数据移到与模型相同的设备
+    Xte_w_t = Xte_w_t.to(device)
+    Yte_w_t = Yte_w_t.to(device)
+    
     model.eval()
     preds_norm = []
     with torch.no_grad():
@@ -396,12 +423,6 @@ def main():
     res_pred = preds_norm * r_std + r_mean
     res_true = Yte_aligned * r_std + r_mean
     
-    if args.apply_physical_constraint:
-        test_F0_slice = F0[np.array(test_starts) + L - 1]
-        full_pred = test_F0_slice + res_pred
-        full_pred = physical_force_constraint(full_pred, dt=dt, max_rate=args.force_max_rate, min_force=args.force_min)
-        res_pred = full_pred - test_F0_slice
-    
     mae_res = float(np.mean(np.abs(res_pred - res_true)))
     rmse_res = float(np.sqrt(np.mean((res_pred - res_true)**2)))
     print(f"测试集残差: MAE={mae_res:.3f} | RMSE={rmse_res:.3f}")
@@ -413,10 +434,13 @@ def main():
         "seq_len": int(L),
         "r_mean": r_mean,
         "r_std": r_std,
-        "apply_physical_constraint": bool(args.apply_physical_constraint),
-        "force_max_rate": float(args.force_max_rate),
-        "force_min": float(args.force_min),
-        "feature_order": ["x", "dx", "iq", "diq", "F0", "mode"]
+        "feature_order": ["x", "dx", "iq", "diq", "F0", "mode"],
+        # 间隙补偿参数
+        "enable_gap_compensation": bool(args.enable_gap_compensation),
+        "gap_threshold_factor": float(args.gap_threshold_factor),
+        "gap_window": int(args.gap_window),
+        "gap_value_trained": float(gap_value),  # 训练时检测到的间隙值
+        "gap_index_trained": int(gap_index)     # 训练时检测到的间隙点
     }
     
     with open(os.path.join(args.artifacts, "feature_norm.json"), "w", encoding="utf-8") as f:

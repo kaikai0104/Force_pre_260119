@@ -49,6 +49,11 @@ void moving_average(const float *input, float *output, int len, int window);
 void compute_gradient(const float *input, float *output, int len, float dt);
 
 /**
+ * 注意: 间隙检测函数已移至 gap_detection.h
+ * 如需使用间隙检测功能，请包含 gap_detection.h
+ */
+
+/**
  * Play算子 (Prandtl-Ishlinskii模型的基础单元)
  * @param x_series 输入位移序列
  * @param y_series 输出序列
@@ -56,16 +61,6 @@ void compute_gradient(const float *input, float *output, int len, float dt);
  * @param r 阈值参数
  */
 void play_operator(const float *x_series, float *y_series, int len, float r);
-
-/**
- * 物理约束: 限制夹紧力变化率和非负性
- * @param force 夹紧力序列
- * @param len 序列长度
- * @param dt 采样周期
- * @param max_rate 最大变化率 (N/s)
- * @param min_force 最小夹紧力 (N)
- */
-void physical_force_constraint(float *force, int len, float dt, float max_rate, float min_force);
 
 /**
  * Sigmoid激活函数

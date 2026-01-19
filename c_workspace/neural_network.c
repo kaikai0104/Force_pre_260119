@@ -55,6 +55,11 @@ void compute_gradient(const float *input, float *output, int len, float dt) {
     output[len - 1] = (input[len - 1] - input[len - 2]) / dt;
 }
 
+/* 
+ * 注意: 间隙检测和补偿函数已移至 gap_detection.c
+ * 如需使用间隙检测功能，请包含 gap_detection.h 并链接 gap_detection.c
+ */
+
 /* Play算子实现 */
 void play_operator(const float *x_series, float *y_series, int len, float r) {
     if (len <= 0) return;
@@ -265,11 +270,6 @@ void model_inference(const SampleData *samples, int num_samples,
     // 计算PI基线
     compute_pi_baseline(x_smooth, dx_smooth, iq_smooth, diq_smooth, F0, num_samples);
     
-    // 应用物理约束到基线预测
-#if APPLY_PHYSICAL_CONSTRAINT
-    physical_force_constraint(F0, num_samples, DT, FORCE_MAX_RATE, FORCE_MIN);
-#endif
-    
     // 计算模式标志: dx < -thr 且 |iq| > ratio*max|iq|
     float iq_abs_max = 0.0f;
     for (int i = 0; i < num_samples; i++) {
@@ -321,11 +321,6 @@ void model_inference(const SampleData *samples, int num_samples,
             predictions[i] = F0[i] + residual;
         }
     }
-    
-    // 应用物理约束到最终预测
-#if APPLY_PHYSICAL_CONSTRAINT
-    physical_force_constraint(predictions, num_samples, DT, FORCE_MAX_RATE, FORCE_MIN);
-#endif
     
     // 释放临时数组
     free(x);

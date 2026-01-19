@@ -250,18 +250,6 @@ void print_model_config(void) {
     printf("  | Sampling Period : %.4f s          |\n", DT);
     printf("  | Sampling Rate   : %.0f Hz          |\n", 1.0/DT);
     printf("  +-------------------------------------+\n\n");
-    
-    printf("  +-------------------------------------+\n");
-    printf("  | Physical Constraints                |\n");
-    printf("  +-------------------------------------+\n");
-    if (APPLY_PHYSICAL_CONSTRAINT) {
-        printf("  | Status          : Enabled           |\n");
-        printf("  | Max Force Rate  : %.1f N/s         |\n", FORCE_MAX_RATE);
-        printf("  | Min Force       : %.1f N           |\n", FORCE_MIN);
-    } else {
-        printf("  | Status          : Disabled          |\n");
-    }
-    printf("  +-------------------------------------+\n\n");
 }
 
 /**
